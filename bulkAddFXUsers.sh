@@ -8,9 +8,14 @@
 # =============================================================================
 
 # --- Config ------------------------------------------------------------------
-API_URL="https://your-api-endpoint.com/api/resource"
+API_URL="https://ondemand.fx.flywheeldigital.com/agency-central/api/admin/users"
 CSV_FILE="${1:-data.csv}"
-SKIP_HEADER=true   # Set to false if your CSV has no header row
+USERNAME="${2}"
+PASSWORD_VAR="${3}"
+SKIP_HEADER=${4:-true}   # Set to false if your CSV has no header row
+DRYRUN=${5:-false}
+FAILEDRECORDS=()
+EUsername=$(jq -nr --arg str "${USERNAME}"'$str|@uri')
 # -----------------------------------------------------------------------------
 
 # Validate file exists
@@ -23,7 +28,12 @@ LINE_NUM=0
 SUCCESS=0
 FAIL=0
 
-while IFS=',' read -r col1 col2 col3 col4 col5 col6 col7 col8; do
+# --- Get Authentication cookie ---
+echo "Getting authentication details"
+cookie=$(curl -s -D - -H "Content-Type: application/x-www-form-urlencoded" -d "username=${EUsername}&password=${PASSWORD_VAR}" -X POST  "${BASE_URL}/api/authenticate" | grep -i Set-Cookie | cut -d " " -f 2,3 | tr -d )
+echo "$cookie"
+
+while IFS=',' read -r col1 col2 col3 col4 col5 col6 col7 col8 col9 col10 col11 col12 col13 col14; do
   LINE_NUM=$((LINE_NUM + 1))
 
   # Skip header row if enabled
@@ -51,33 +61,54 @@ while IFS=',' read -r col1 col2 col3 col4 col5 col6 col7 col8; do
   # --------------------------------------------------------------------------
 
   # Strip any trailing carriage returns (Windows line endings)
-  value8="${value8//$'\r'/}"
+  value14="${value14//$'\r'/}"
 
   # Build JSON payload
   # TODO: Replace the key names (e.g. "field1") with your actual API field names
   PAYLOAD=$(cat <<EOF
 {
-  "field1": "$value1",
-  "field2": "$value2",
-  "field3": "$value3",
-  "field4": "$value4",
-  "field5": "$value5",
-  "field6": "$value6",
-  "field7": "$value7",
-  "field8": "$value8",
-  "field9": "$value9",
-  "field10": "$value10",
-  "field11": "$value11",
-  "field12": "$value12",
-  "field13": "$value13",
-  "field14": "$value14"
+  "firstName": "$value1",
+  "lastnNme": "$value2",
+  "email": "$value3",
+  "username": "$value4",
+  "password": "$value5",
+  "agencyId": "$value6",
+  "organisationOfficeId": "$value7",
+  "roles": "$value8",
+  "primaryRoleId": "$value9",
+  "mediaTypes": "$value10",
+  "primaryBuyingWorkflowId": "$value11",
+  "teams": "$value12",
+  "memberSince": "$value13",
+  "memberTo": "$value14"
 }
 EOF
 )
   echo "Processing row $LINE_NUM: $value1 $value2..."
+  
+  
+  if DRYRUN; then
+    echo "$PAYLOAD"
+  else
+    # Send the request
+    HTTP_STATUS=$(curl --cookie "$cookie" \
+      --request POST \
+      --header "Content-Type: application/json" \
+      --header "Accept: application/json" \
+      --data "$PAYLOAD" \
+      "$API_URL")
 
+    if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
+      echo "  ✓ Row $LINE_NUM sent successfully (HTTP $HTTP_STATUS)"
+      SUCCESS=$((SUCCESS + 1))
+    else
+      echo "  ✗ Row $LINE_NUM failed (HTTP $HTTP_STATUS)"
+      FAIL=$((FAIL + 1))
+      FAILEDRECORDS+=$LINE_NUM
+    fi
+  fi
   # Send the request
-  HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+  HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" --cookie "$cookie" \
     --request POST \
     --header "Content-Type: application/json" \
     --header "Accept: application/json" \
@@ -90,6 +121,7 @@ EOF
   else
     echo "  ✗ Row $LINE_NUM failed (HTTP $HTTP_STATUS)"
     FAIL=$((FAIL + 1))
+    FAILEDRECORDS+=$LINE_NUM
   fi
 
 done < "$CSV_FILE"
@@ -100,4 +132,5 @@ echo "========================================="
 echo "Done. Processed $((LINE_NUM - 1)) rows."
 echo "  Success : $SUCCESS"
 echo "  Failed  : $FAIL"
+echo "  Failed records: $FAILEDRECORDS"
 echo "========================================="
