@@ -8,16 +8,20 @@
 # =============================================================================
 
 # --- Config ------------------------------------------------------------------
-API_URL="https://ondemand.fx.flywheeldigital.com/agency-central/api/admin/users"
-CSV_FILE="${1:-data.csv}"
-USERNAME="${2}"
-PASSWORD_VAR="${3}"
-SKIP_HEADER="${4:-true}"   # Set to false if your CSV has no header row
-DRYRUN=${5:-false}
-COOKIE=${6}
+API_URL="agency-central/api/admin/users"
+BASE_URL="${1}"
+CSV_FILE="${2:-data.csv}"
+USERNAME="${3}"
+PASSWORD_VAR="${4}"
+SKIP_HEADER="${5:-true}"   # Set to false if your CSV has no header row
+DRYRUN=${6:-false}
 FAILEDRECORDS=()
 echo "DRY RUN = $DRYRUN"
 
+# Add authentication code here
+COOKIE = $(curl -s -D -H "Content-Type: Application/x-www-form-urlencoded" -d "username=${USERNAME}&ppassword=${PASSWORD}" -X POST "${BASE_URL}/api/authenticate" | grep -i "Set-Cookie" | awk '{print $2}' | tr -d '\r')
+
+echo $COOKIE
 # -----------------------------------------------------------------------------
 
 # Validate file exists
@@ -94,7 +98,7 @@ EOF
       --header "Content-Type: application/json" \
       --header "Accept: application/json" \
       --data "$PAYLOAD" \
-      "$API_URL")
+      "$BASE_URL/$API_URL")
 
     if [[ "$HTTP_STATUS" -ge 200 && "$HTTP_STATUS" -lt 300 ]]; then
       echo "  ✓ Row $LINE_NUM sent successfully (HTTP $HTTP_STATUS)"
