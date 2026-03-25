@@ -2,7 +2,7 @@
 """
 build_workbook.py
 -----------------
-Reads testJSON.json and produces roles_workbook.xlsx with:
+Fetches role data from an API (or local JSON file) and produces roles_workbook.xlsx with:
   Sheet 1 ("Roles")           — full JSON data as a formatted table
   Sheet 2 ("User Assignments")— data-entry sheet with columns:
                                   email | roleID (dropdown → name) |
@@ -10,17 +10,31 @@ Reads testJSON.json and produces roles_workbook.xlsx with:
                                   agencyid | holdcoid
 
 Usage:
-    python build_workbook.py [--json path/to/file.json] [--out path/to/output.xlsx]
+    # Fetch from API (id argument appended as query param)
+    python build_workbook.py --id 123
+    python build_workbook.py --id 456 --out custom_output.xlsx
+
+    # Override the base API URL
+    python build_workbook.py --id 123 --url https://other-api.com/roles
+
+    # Fall back to a local JSON file
+    python build_workbook.py --json testJSON.json
 """
 
 import json
 import argparse
+import sys
 from pathlib import Path
+from urllib.request import urlopen, Request
+from urllib.parse import urlencode, urlparse, parse_qs, urljoin, urlunparse
+from urllib.error import URLError, HTTPError
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
+
+DEFAULT_API_URL = "https://json.com/test"
 
 # ---------------------------------------------------------------------------
 # Styling helpers
@@ -165,24 +179,73 @@ def build_sheet2(wb, data, roles_sheet_name="Roles"):
 
 
 # ---------------------------------------------------------------------------
+# Data fetching
+# ---------------------------------------------------------------------------
+def fetch_from_api(base_url, record_id, timeout=15):
+    """Append ?id=<record_id> to base_url and return parsed JSON."""
+    parsed = urlparse(base_url)
+    existing_params = parse_qs(parsed.query)
+    existing_params["id"] = [str(record_id)]
+    new_query = urlencode({k: v[0] for k, v in existing_params.items()})
+    url = urlunparse(parsed._replace(query=new_query))
+
+    print(f"Fetching → {url}")
+    req = Request(url, headers={"Accept": "application/json", "User-Agent": "build_workbook/1.0"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw)
+    except HTTPError as e:
+        print(f"HTTP error {e.code}: {e.reason}", file=sys.stderr)
+        raise
+    except URLError as e:
+        print(f"URL error: {e.reason}", file=sys.stderr)
+        raise
+
+
+def load_from_file(json_path):
+    path = Path(json_path)
+    if not path.exists():
+        raise FileNotFoundError(f"JSON file not found: {path}")
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Build Excel workbook from JSON roles data.")
-    parser.add_argument("--json", default="testJSON.json",        help="Input JSON file path")
-    parser.add_argument("--out",  default="roles_workbook.xlsx",  help="Output Excel file path")
+    parser = argparse.ArgumentParser(
+        description="Build Excel workbook from API or local JSON roles data.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python build_workbook.py --id 123
+  python build_workbook.py --id 456 --out my_roles.xlsx
+  python build_workbook.py --id 123 --url https://other-api.com/roles
+  python build_workbook.py --json testJSON.json
+        """,
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--id",   type=str, help="Record ID to fetch from the API (appended as ?id=<value>)")
+    source.add_argument("--json", type=str, help="Path to a local JSON file (fallback / offline use)")
+
+    parser.add_argument("--url",  default=DEFAULT_API_URL, help=f"Base API URL (default: {DEFAULT_API_URL})")
+    parser.add_argument("--out",  default="roles_workbook.xlsx", help="Output Excel file path")
     args = parser.parse_args()
 
-    json_path = Path(args.json)
-    out_path  = Path(args.out)
+    out_path = Path(args.out)
 
-    if not json_path.exists():
-        raise FileNotFoundError(f"JSON file not found: {json_path}")
+    if args.id:
+        data = fetch_from_api(args.url, args.id)
+    else:
+        data = load_from_file(args.json)
 
-    with open(json_path, "r") as f:
-        data = json.load(f)
+    if not isinstance(data, list):
+        print("Warning: API response is not a list — wrapping in list.", file=sys.stderr)
+        data = [data]
 
-    print(f"Loaded {len(data)} roles from {json_path}")
+    print(f"Loaded {len(data)} roles.")
 
     wb = Workbook()
     build_sheet1(wb, data)
